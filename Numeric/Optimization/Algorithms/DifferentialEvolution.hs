@@ -7,6 +7,7 @@ import Control.DeepSeq
 import qualified Data.Vector as V
 import Data.Vector ((!))
 import qualified Data.Vector.Unboxed as VUB
+import qualified Data.Vector.Unboxed.Mutable as MUB
 
 import Data.Function
 import Data.Record.Label
@@ -18,8 +19,10 @@ import Control.Monad.Primitive
 import System.Random.MWC
 import Data.Word
 
+import Test.QuickCheck hiding (Gen)
+
 type Vector  = VUB.Vector Double
-type Bounds  = VUB.Vector (Double,Double)
+type Bounds  = (VUB.Vector Double, VUB.Vector Double)
 type Fitness = Vector -> Double
 type Budget = Int
 
@@ -63,23 +66,28 @@ class HasPRNG m where
     withGen :: (Gen (S m) -> m b) -> m b
 
 selectRandom :: (PrimMonad m) => Gen (PrimState m) -> Int -> V.Vector a -> m [a]
-selectRandom gen n vec = do
-    idx <- replicateM n (randomIndex (V.length vec) gen)
-    return $ map (vec !) idx
+selectRandom !gen !n vec = do
+    let idx = replicate n 0
+    --idx <- replicateM n (randomIndex (V.length vec) gen)
+    return $ map (V.unsafeIndex vec) idx
 
 {-#INLINE randomIndex#-}
-randomIndex ub gen = uni >>= return . floor . (fromIntegral ub*)
+randomIndex !ub gen = uni >>= return . floor . (fromIntegral ub*)
  where 
   uni = do x <- (uniform gen)
            return (x::Float)  
 
-expVariate lambda gen = work 0
+expVariate !lambda gen = do
+    u :: Float <- uniform gen
+    return . round $ (- log (u))/(1-lambda)
+
+expVariate' !lambda gen = work 0
     where
      work !n = do
                x :: Float <- uniform gen
                if x<lambda then work (n+1)
                            else return (n::Int)
--- -- --
+ -- --
 -- These should also have their own Vector - module
 (<+>),(<->) :: Vector -> Vector -> Vector
 a <+> b = VUB.zipWith (+) a b
@@ -121,11 +129,79 @@ expCrossover
   :: (PrimMonad m, VUB.Unbox t) =>
      Int -> Float -> VUB.Vector t -> VUB.Vector t -> Gen (PrimState m) -> m (VUB.Vector t) 
 expCrossover l cr a b gen = do
-        n :: Int <- expVariate cr gen
+        n' :: Int <- expVariate cr gen
         index <- randomIndex l gen
-        let m = index + n - l
-        return $ VUB.map (\(e1,e2,i) -> if (i>=index && i<(index+n)) || i<m then e2 else e1) 
-                $ VUB.zip3 a b (VUB.enumFromN 0 l)
+        let n = min n' (l-1)
+            m = index + n - l
+            nmax = min n (l-index)
+            overflow = index+n-l
+            end = min l (index+n)
+        return (moduloReplacement1 index n l a b)
+       -- return $ VUB.modify (\v -> do
+       --                        -- MUB.write v index (b VUB.! index)
+       --                         forM_ ([0..overflow-1]++[index..end-1]) $ \i -> (MUB.write v i (b VUB.! i)))
+       --                 a
+
+prop_r1_len s' l' = VUB.length (moduloReplacement1 s l dim a b) == dim
+    where
+     s = abs s' `mod` dim
+     l = abs l' `mod` dim
+     dim = 100
+     a   = VUB.replicate dim (0::Int)
+     b   = VUB.replicate dim (1::Int)
+
+prop_r1_cs s' l' = (VUB.length $ VUB.filter (==1) (moduloReplacement1 s l tdim tva tvb)) == max 1 l
+    where
+     s = abs s' `mod` tdim
+     l = abs l' `mod` tdim
+
+prop_r1_eq2 s' l' = (moduloReplacement1 s l tdim tva tvb) == 
+                    (moduloReplacement2 s l tdim tva tvb)
+    where
+     s = abs s' `mod` tdim
+     l = abs l' `mod` tdim
+
+prop_r1_eq3 s' l' = (moduloReplacement1 s l tdim tva tvb) == 
+                    (moduloReplacement3 s l tdim tva tvb)
+    where
+     s = abs s' `mod` tdim
+     l = abs l' `mod` tdim
+tdim = 100
+tva   = VUB.replicate tdim (0::Int)
+tvb   = VUB.replicate tdim (1::Int)
+
+moduloReplacement1 start length dim a b 
+    = VUB.modify (\v -> do 
+                        MUB.write v start (b VUB.! start)
+                        forM_ ([0..overflow-1]++[start..end-1]) $ \i -> (MUB.write v i (b VUB.! i)))
+                        a
+    where
+     overflow = start+length-dim
+     end      = min dim $ start+length
+
+{-#INLINE moduloReplacement2 #-}
+moduloReplacement2 start length dim a b 
+       = VUB.generate dim (\i -> if (i>=start && i < end) || i < overflow || i==start
+                                  then b VUB.! i else a VUB.! i )
+    where
+     overflow = start+length-dim
+     end      = min dim $ start+length
+
+{-#INLINE moduloReplacement3 #-}
+moduloReplacement3 start length dim a b 
+       = VUB.map (\(e1,e2,i) -> if (i>=start && i<end) || i < overflow || i==start then e2 else e1) 
+                 $ VUB.zip3 a b (VUB.enumFromN 0 dim)
+    where
+     overflow = start+length-dim
+     end      = min dim $ start+length
+
+
+        --return $ VUB.take m a +++ VUB.slice m index b +++ VUB.dr
+       -- return $ {-#SCC "Generate"#-} VUB.generate l (\i -> if i>=index && i < (index+n) || i < m
+       --                                then a VUB.! i else b VUB.! i )
+       -- return $ VUB.map (\(e1,e2,i) -> if (i>=index && i<(index+n)) || i<m then e2 else e1) 
+       --         $ VUB.zip3 a b (VUB.enumFromN 0 l)
+
 
 binCrossover
   :: (PrimMonad m, VUB.Unbox t) =>
@@ -135,7 +211,7 @@ binCrossover l cr a b gen = do
         randoms :: VUB.Vector Float <- VUB.replicateM l (uniform gen)
         index   :: Int <- randomIndex l gen
         return $ VUB.map (\(x,e1,e2,i) -> if x<cr || i == index then e2 else e1) 
-                $ VUB.zip4 randoms a b (VUB.enumFromN 0 l)
+               $ VUB.zip4 randoms a b (VUB.enumFromN 0 l)
 
 data DEArgs = DEArgs {
                       destrategy :: Strategy
@@ -146,8 +222,18 @@ data DEArgs = DEArgs {
                      ,budget      :: Budget
                      ,seed        :: Seed}
 
-saturateVector bounds  x = VUB.zipWith saturate bounds x
-saturate (lb,ub) x = min (max x lb) ub
+saturateVector :: Bounds -> VUB.Vector Double -> VUB.Vector Double
+saturateVector (mn,mx) x = VUB.modify (\m -> go m (MUB.length m-1)) x
+    where
+     go :: MUB.MVector s Double -> Int -> ST s ()
+     go x 0 = return ()
+     go !x !i = do
+              xi <- MUB.read x i
+              when (xi < (mn VUB.! i)) $  MUB.write x i (mn VUB.! i)
+              when (xi > (mn VUB.! i)) $  MUB.write x i (mx VUB.! i)
+   
+--saturateVector (mn,mx)  x = VUB.zipWith max mn $ VUB.zipWith min mx x
+--saturate (lb,ub) x = min (max x lb) ub
 
 
 de :: DEArgs -> DeMonad s (Double,Vector)
