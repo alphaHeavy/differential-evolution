@@ -7,11 +7,14 @@ import qualified Data.Vector as V
 import Data.Vector.Unboxed ((!))
 import Data.List
 import Utils.List
+import Control.Arrow
 import System.Random.MWC
 import System.Environment
 import System.Directory
 import Utils.File
 import Data.Label
+import Data.Monoid
+import Graphics.Gnuplot.Simple
 import qualified Data.DList as DL
 
 f4 dim = VUB.sum . VUB.map (\x -> x*x-10*cos(2*pi*x)+10)
@@ -25,7 +28,9 @@ createSeed fls = initialize (VUB.fromList fls) >>= save
 
 main = do
     seed <- createSeed [11..256]
-    w <- de (defaultParams (fsphere 10) (f4b 10) (DL.singleton . currentBest)) seed
-    mapM_ print (DL.toList w)
-    print (fsphere 10 $ VUB.replicate 10 0)
+    w <- de (defaultParams (f4 10) (f4b 10) 
+              (DL.singleton . currentBest)) seed
+    plotList [Custom "logscale" ["y"]] $ map fst . DL.toList $  w
+    let ds = transpose . map VUB.toList . map snd $ DL.toList w
+    plotLists [Custom "logscale" ["y"]] ds --[map abs . decreasing . DL.toList $ f, DL.toList s]
     

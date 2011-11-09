@@ -214,22 +214,11 @@ defaultParams fitness bounds = DEArgs (Rand1Exp 0.9 0.70)
                         where seed = runST (create >>=save)
                               dimension = VUB.length . fst $ bounds  
 
-saturateVector1 :: Bounds -> VUB.Vector Double -> VUB.Vector Double
-saturateVector1 (mn,mx) x = VUB.generate d (\i -> min (mx!i) (max (mn!i) (x!i)))
+saturateVector :: Bounds -> VUB.Vector Double -> VUB.Vector Double
+saturateVector (mn,mx) x = VUB.generate d (\i -> min (mx!i) (max (mn!i) (x!i)))
     where
      (!) = (VUB.!)
      d = VUB.length x
-
-saturateVector :: Bounds -> VUB.Vector Double -> VUB.Vector Double
-saturateVector (mn,mx) x = VUB.modify (\m -> go m (MUB.length m-1)) x
-    where
-     go :: MUB.MVector s Double -> Int -> ST s ()
-     go x (-1) = return ()
-     go !x !i = do
-              xi <- MUB.read x i
-              when (xi < (mn VUB.! i)) $  MUB.write x i (mn VUB.! i)
-              when (xi > (mx VUB.! i)) $  MUB.write x i (mx VUB.! i)
-              go x (i-1)
 
 -- | Run DE algorithm over a 'PrimMonad' such as 'IO' or 'ST'. Returns the fitness trace 
 --   specified by 'DEArgs.trace'
