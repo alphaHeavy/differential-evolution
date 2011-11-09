@@ -1,11 +1,9 @@
 {-# LANGUAGE ScopedTypeVariables, ViewPatterns, BangPatterns, DeriveDataTypeable, RecordWildCards, GeneralizedNewtypeDeriving, MultiParamTypeClasses, RankNTypes, ImpredicativeTypes, TypeFamilies, UndecidableInstances, TemplateHaskell,TypeOperators #-}
--- | Module    : Numeric.Optimization.Algorithms.DifferentialEvolution
+-- |Module    : Numeric.Optimization.Algorithms.DifferentialEvolution
 -- Copyright   : (c) 2011 Ville Tirronen
 -- License     : MIT
 --
 -- Maintainer  : ville.tirronen@jyu.fi
--- Stability   : experimental
--- Portability : portable
 --
 -- This module implements basic version of Differential Evolution algorithm
 -- for finding minimum of possibly multimodal and non-differentiable real valued
@@ -20,8 +18,6 @@
 --  
 -- >>>de (defaultParams fitness ((VUB.replicate 60 0), (VUB.replicate 60 0)))
 -- (0.12486060253695,fromList [2.481036288296201e-3, ... ]
---
-
 module Numeric.Optimization.Algorithms.DifferentialEvolution(
         -- * Basic Types
         Vector, Bounds, Fitness, Budget, DeMonad,
@@ -53,9 +49,14 @@ import Data.Word
 -- import Test.QuickCheck hiding (Gen)
 
 
+-- |Vector type for storing trial points
 type Vector  = VUB.Vector Double
+-- |Type for storing function domain orthope. (Structure of arrays seems 
+--   more efficient than array of structures)
 type Bounds  = (VUB.Vector Double, VUB.Vector Double)
+-- |Fitness function type
 type Fitness = Vector -> Double
+-- |Termination condition type. (Currently just a hard limit on evaluation count)
 type Budget = Int
 
 data DEParams s = DEParams {_gen :: GenST s
@@ -262,7 +263,7 @@ binCrossover l cr a b gen = do
         return $ VUB.map (\(x,e1,e2,i) -> if x<cr || i == index then e2 else e1) 
                $ VUB.zip4 randoms a b (VUB.enumFromN 0 l)
 
--- |Parameters for algorothm execution
+-- |Parameters for algorithm execution
 data DEArgs = DEArgs {
                       -- |Mutation strategy
                       destrategy :: Strategy
@@ -304,10 +305,13 @@ saturateVector (mn,mx) x = VUB.modify (\m -> go m (MUB.length m-1)) x
 de :: DEArgs -> DeMonad s (Double,Vector)
 de DEArgs{..} = do
     liftST (restore seed) >>= setM gen
-    init <- withGen $ \g -> liftST (V.replicateM spop $ uniformVector g dim) 
+    
+    init <- withGen $ \g -> liftST (V.replicateM spop (uniformVector g dim >>= return.scale)) 
     pop =: V.map (fitness &&& id) init
     work
     where
+     (lb,ub) = (fst bounds, snd bounds)
+     scale x = VUB.zipWith3 (\l u x -> l+x*(u-l)) lb ub x
      strat = strategy destrategy
      work = do logPoint ""
                e <- getM ec 
