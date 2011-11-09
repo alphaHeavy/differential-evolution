@@ -50,9 +50,6 @@ import Control.Monad.Primitive
 import System.Random.MWC
 import Data.Word
 
--- import Test.QuickCheck hiding (Gen)
-
-
 type Vector  = VUB.Vector Double
 type Bounds  = (VUB.Vector Double, VUB.Vector Double)
 type Fitness = Vector -> Double
@@ -184,40 +181,6 @@ expCrossover l cr a b gen = do
             overflow = index+n-l
             end = min l (index+n)
         return (moduloReplacement1 index n l a b)
-       -- return $ VUB.modify (\v -> do
-       --                        -- MUB.write v index (b VUB.! index)
-       --                         forM_ ([0..overflow-1]++[index..end-1]) $ \i -> (MUB.write v i (b VUB.! i)))
-       --                 a
-
-{-
-prop_r1_len s' l' = VUB.length (moduloReplacement1 s l dim a b) == dim
-    where
-     s = abs s' `mod` dim
-     l = abs l' `mod` dim
-     dim = 100
-     a   = VUB.replicate dim (0::Int)
-     b   = VUB.replicate dim (1::Int)
-
-prop_r1_cs s' l' = (VUB.length $ VUB.filter (==1) (moduloReplacement1 s l tdim tva tvb)) == max 1 l
-    where
-     s = abs s' `mod` tdim
-     l = abs l' `mod` tdim
-
-prop_r1_eq2 s' l' = (moduloReplacement1 s l tdim tva tvb) == 
-                    (moduloReplacement2 s l tdim tva tvb)
-    where
-     s = abs s' `mod` tdim
-     l = abs l' `mod` tdim
-
-prop_r1_eq3 s' l' = (moduloReplacement1 s l tdim tva tvb) == 
-                    (moduloReplacement3 s l tdim tva tvb)
-    where
-     s = abs s' `mod` tdim
-     l = abs l' `mod` tdim
-tdim = 100
-tva   = VUB.replicate tdim (0::Int)
-tvb   = VUB.replicate tdim (1::Int)
--}
 
 moduloReplacement1 start length dim a b 
     = VUB.modify (\v -> do 
@@ -227,29 +190,6 @@ moduloReplacement1 start length dim a b
     where
      overflow = start+length-dim
      end      = min dim $ start+length
-
-{-#INLINE moduloReplacement2 #-}
-moduloReplacement2 start length dim a b 
-       = VUB.generate dim (\i -> if (i>=start && i < end) || i < overflow || i==start
-                                  then b VUB.! i else a VUB.! i )
-    where
-     overflow = start+length-dim
-     end      = min dim $ start+length
-
-{-#INLINE moduloReplacement3 #-}
-moduloReplacement3 start length dim a b 
-       = VUB.map (\(e1,e2,i) -> if (i>=start && i<end) || i < overflow || i==start then e2 else e1) 
-                 $ VUB.zip3 a b (VUB.enumFromN 0 dim)
-    where
-     overflow = start+length-dim
-     end      = min dim $ start+length
-
-
-        --return $ VUB.take m a +++ VUB.slice m index b +++ VUB.dr
-       -- return $ {-#SCC "Generate"#-} VUB.generate l (\i -> if i>=index && i < (index+n) || i < m
-       --                                then a VUB.! i else b VUB.! i )
-       -- return $ VUB.map (\(e1,e2,i) -> if (i>=index && i<(index+n)) || i<m then e2 else e1) 
-       --         $ VUB.zip3 a b (VUB.enumFromN 0 l)
 
 
 binCrossover
@@ -296,10 +236,6 @@ saturateVector (mn,mx) x = VUB.modify (\m -> go m (MUB.length m-1)) x
               when (xi < (mn VUB.! i)) $  MUB.write x i (mn VUB.! i)
               when (xi > (mn VUB.! i)) $  MUB.write x i (mx VUB.! i)
    
---saturateVector (mn,mx)  x = VUB.zipWith max mn $ VUB.zipWith min mx x
---saturate (lb,ub) x = min (max x lb) ub
-
-
 -- | Create a Differential Evolution process
 de :: DEArgs -> DeMonad s (Double,Vector)
 de DEArgs{..} = do
