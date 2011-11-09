@@ -27,9 +27,9 @@ import Data.Vector ((!))
 import qualified Data.Vector.Unboxed as VUB
 import qualified Data.Vector.Unboxed.Mutable as MUB
 
+import Control.Applicative
 import Data.Function
 import Data.Label as L
-import Data.Label.PureM as M
 import Data.Monoid
 import Data.Ord
 import Control.Monad
@@ -74,6 +74,11 @@ population = pop
 currentBest :: DEParams -> (Double,Vector)
 currentBest = V.minimumBy (comparing fst) . get pop
 
+-- | Population Size
+sPop = V.length . get pop
+
+-- | Problem dimension
+dimension = VUB.length . snd . V.head . get pop 
 
 -- * Context monad
 
@@ -220,11 +225,11 @@ saturateVector (mn,mx) x = VUB.modify (\m -> go m (MUB.length m-1)) x
 
 -- | Run DE algorithm over a 'PrimMonad' such as 'IO' or 'ST'. Returns the fitness trace 
 --   specified by 'DEArgs.trace'
-de :: (Monoid w, PrimMonad m) => DEArgs w -> Seed -> m w 
+de :: (Functor m, Monoid w, PrimMonad m) => DEArgs w -> Seed -> m w 
 de args seed = restore seed >>= runDE (de' args) >>= return . snd
 
 -- | Create a Differential Evolution process inside DeMonad
-de' :: (Monoid w, PrimMonad m) => DEArgs w -> DeMonad m (Generator m) w ()
+de' :: (Functor m, Monoid w, PrimMonad m) => DEArgs w -> DeMonad m (Generator m) w ()
 de' DEArgs{..} = do
     gen  <- lift . lift $ restore seed
     init <- lift . lift $ V.replicateM spop (uniformVector gen dim >>= return.scale) 
@@ -243,20 +248,22 @@ de' DEArgs{..} = do
 
 -- | Single iteration of Differential Evolution. Could be an useful building block
 --   for other algorithms as well.
-deStep :: (Monoid w, PrimMonad m) =>
+deStep :: (Functor m, Monoid w, PrimMonad m) =>
           DEStrategy m w -> Bounds -> Fitness 
           -> Generator m
-          -> DEParams -- V.Vector (Double,Vector)
-          -> DeMonad m (Generator m) w DEParams -- (V.Vector (Double,Vector))  
-deStep strat bounds fitness gen params@(get pop -> population) = do 
-        let newEc = get ec params + V.length population
-        newPop <- (V.mapM (candidate gen) population) 
-        return $ set ec newEc . set pop newPop $ params 
+          -> DEParams 
+          -> DeMonad m (Generator m) w DEParams 
+deStep strat bounds fitness gen params = do 
+    newPop <- V.mapM (update gen) . get pop $ params
+    return $ modify ec (+ sPop params) . set pop newPop $ params 
    where 
-    l = VUB.length . snd . V.head $ population
-    candidate gen orig@(ft,a) = do
-        w <- strat gen l a population
-        return (select orig (postProcess w))
-    select (fa,a) b@(fitness -> fb) = if fa < fb then (fa,a) else (fb,b) 
-    postProcess x = saturateVector bounds x
+    l = dimension params
+    update gen orig@(ft,a) = minBy fst orig 
+                             . (fitness &&& id)
+                             . saturateVector bounds 
+                             <$> strat gen l a (get pop params)
+
+minBy :: Ord x => (a -> x) -> a -> a -> a
+minBy f a b | f a <= f b  = a 
+            | otherwise  = b
 
