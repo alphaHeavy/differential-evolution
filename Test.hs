@@ -8,12 +8,12 @@ import Data.Vector.Unboxed ((!))
 import Data.List
 import Utils.List
 import System.Random.MWC
-import RunDB
-import Control.Concurrent.ParallelIO.Global
+-- import RunDB
+-- import Control.Concurrent.ParallelIO.Global
 import System.Environment
 import System.Directory
 import Utils.File
-import Data.Record.Label
+import Data.Label
 
 f4 dim = VUB.sum . VUB.map (\x -> x*x-10*cos(2*pi*x)+10)
 
