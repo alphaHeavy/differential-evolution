@@ -11,16 +11,6 @@
 -- for finding minimum of possibly multimodal and non-differentiable real valued
 -- functions. 
 -- 
--- Example
--- >>>import Data.Vector.Unboxed as VUB
---
--- >>>import Numeric.Optimization.Algorithms.DifferentialEvolution
--- 
--- >>>let fitness = VUB.sum . VUB.map (*2)
---  
--- >>>de (defaultParams fitness ((VUB.replicate 60 0), (VUB.replicate 60 0)))
--- (0.12486060253695,fromList [2.481036288296201e-3, ... ]
---
 
 module Numeric.Optimization.Algorithms.DifferentialEvolution(
         -- * Basic Types
@@ -42,6 +32,8 @@ import qualified Data.Vector.Unboxed.Mutable as MUB
 
 import Data.Function
 import Data.Record.Label
+import Data.Monoid
+import Data.Ord
 import Control.Monad
 import Control.Arrow ((&&&))
 import Control.Monad.ST
@@ -50,57 +42,70 @@ import Control.Monad.Primitive
 import System.Random.MWC
 import Data.Word
 
+-- Essential Types
+
 type Vector  = VUB.Vector Double
 type Bounds  = (VUB.Vector Double, VUB.Vector Double)
 type Fitness = Vector -> Double
 type Budget = Int
 
-data DEParams s = DEParams {_gen :: GenST s
-                           ,_ec  :: Int
-                           ,_pop :: V.Vector (Double,Vector)
-                           ,_trace :: [(Int,Double,String)] }
+-- * Optimizer State
+
+data DEParams s w = DEParams {_gen :: GenST s
+                             ,_ec  :: Int
+                             ,_pop :: V.Vector (Double,Vector)
+                           ,_trace :: w}
 
 $(mkLabels [''DEParams])
 
 -- |The current number of fitness evaluations
-evaluationCount :: forall s. DEParams s :-> Int
+evaluationCount :: forall w. forall s. DEParams s w :-> Int
 evaluationCount = ec
 
 -- |The current set of active trial points
-population :: forall s. DEParams s :-> V.Vector (Double,Vector)
-population      = pop
-
+population :: forall w. forall s. DEParams s w :-> V.Vector (Double,Vector)
+population = pop
+{-
+-- | Get the current best indevidual and Fitness
+currentBest :: forall w. forall s. DEParams s w :-> (Double,Vector)
+currentBest = V.minimumBy (comparing fst) . get pop
+-}
 -- |The execution trace of current run
-optimizationTrace :: forall s. DEParams s :-> [(Int,Double,String)]
+optimizationTrace :: (Monoid w) => forall s. DEParams s w :-> w
 optimizationTrace = trace
 
--- |Monad for storing optimization trace and random number generator
-newtype DeMonad s a = DE (StateT (DEParams s) (ST s) a) deriving (Monad)
+-- * Context monad
 
-instance MonadState (DEParams s) (DeMonad s) where
+-- |Monad for storing optimization trace and random number generator
+newtype DeMonad s w a = DE (StateT (DEParams s w) (ST s) a) deriving (Monad)
+
+type Generator m = Gen (PrimState m)
+
+instance MonadState (DEParams s w) (DeMonad s w) where
     get   = DE $ get
     put a = DE $ put a
 
-instance HasPRNG (DeMonad s) where
-    type S (DeMonad s) = s
+instance HasPRNG (DeMonad s w) where
+    type S (DeMonad s w) = s
     withGen op = get >>= \x -> op (_gen x)
 
-liftST :: ST s a -> DeMonad s a
+liftST :: ST s a -> DeMonad s w a
 liftST op = DE $ lift op
 
 -- |Extract values from the DeMonad.
-runDE :: (forall s. DeMonad s a) -> a
+runDE :: Monoid w => (forall s. DeMonad s w a) -> a
 runDE de = runST (let (DE a ) = de in evalStateT a 
                                        $ DEParams (error "Generator uninitialized") 
                                                   0
                                                   (error "Population unitialized") 
-                                                  [])
+                                                  mempty)
 
-logPoint :: String -> DeMonad s ()
+logPoint :: String -> DeMonad s w ()
 logPoint tx = do
     (cb,_) <- getM pop >>= return . V.minimumBy (compare`on`fst)
     e <- getM ec
-    modM trace ((e,cb,tx):)
+    return ()
+--    modM trace ((e,cb,tx):)
 
 
 -- HasPRNG related
@@ -148,30 +153,32 @@ data Strategy  = Rand1Bin {cr ::{-# UNPACK #-} !Float, f ::{-# UNPACK #-} !Doubl
                | Rand2Exp {cr ::{-# UNPACK #-} !Float, f ::{-# UNPACK #-} !Double} 
                deriving (Show)
 
-type DEStrategy s = GenST s -> Int -> Vector -> V.Vector (Double, Vector) -> DeMonad s Vector
+type DEStrategy s w = GenST s -> Int -> Vector -> V.Vector (Double, Vector) -> DeMonad s w Vector
+
 -- |Convert a Showable strategy into executable one
-strategy :: Strategy -> DEStrategy s
+strategy :: Strategy -> DEStrategy s w
 strategy (Rand1Bin{..}) = strat' f cr rand1 binCrossover
 strategy (Rand2Bin{..}) = strat' f cr rand2 binCrossover
 strategy (Rand1Exp{..}) = strat' f cr rand1 expCrossover
 strategy (Rand2Exp{..}) = strat' f cr rand2 expCrossover 
-strat' f cr m co =  \gen l parent pop -> liftST (m gen f pop >>= \x -> co l cr parent x gen)
 {-# INLINE strategy #-}
 
+strat' f cr m co =  \gen l parent pop -> liftST (m gen f pop >>= \x -> co l cr parent x gen)
 
-rand1 :: GenST s -> Double -> V.Vector (Double,Vector) -> ST s Vector
+
+rand1 :: (PrimMonad m) => Generator m -> Double -> V.Vector (Double,Vector) -> m Vector
 rand1 gen f pop = do
             [x1,x2,x3] <- selectRandom gen 3 $ V.map snd pop
             return $ x1 <+> (f *| (x2 <-> x3))
 
-rand2 :: GenST s -> Double -> V.Vector (a, Vector) -> ST s Vector
+rand2 :: (PrimMonad m) => Generator m -> Double -> V.Vector (a, Vector) -> m Vector
 rand2 gen f pop = do
             [x1,x2,x3,x4,x5] <- selectRandom gen 5 $ V.map snd pop
             return $ x1 <+> (f *| (x2 <-> x3)) <+> (f *| (x4 <-> x5))
 
 expCrossover
   :: (PrimMonad m, VUB.Unbox t) =>
-     Int -> Float -> VUB.Vector t -> VUB.Vector t -> Gen (PrimState m) -> m (VUB.Vector t) 
+     Int -> Float -> VUB.Vector t -> VUB.Vector t -> Generator m -> m (VUB.Vector t) 
 expCrossover l cr a b gen = do
         n' :: Int <- expVariate cr gen
         index <- randomIndex l gen
@@ -237,7 +244,7 @@ saturateVector (mn,mx) x = VUB.modify (\m -> go m (MUB.length m-1)) x
               when (xi > (mn VUB.! i)) $  MUB.write x i (mx VUB.! i)
    
 -- | Create a Differential Evolution process
-de :: DEArgs -> DeMonad s (Double,Vector)
+de :: (Monoid w) => DEArgs -> DeMonad s w (Double,Vector)
 de DEArgs{..} = do
     liftST (restore seed) >>= setM gen
     init <- withGen $ \g -> liftST (V.replicateM spop $ uniformVector g dim) 
@@ -253,9 +260,10 @@ de DEArgs{..} = do
 
 -- | Single iteration of Differential Evolution. Could be an useful building block
 --   for other algorithms as well.
-deStep :: DEStrategy s -> Bounds -> Fitness 
+deStep :: (Monoid w) =>
+          DEStrategy s w -> Bounds -> Fitness 
           -> V.Vector (Double,Vector)
-          -> DeMonad s (V.Vector (Double,Vector))  
+          -> DeMonad s w (V.Vector (Double,Vector))  
 deStep strat bounds fitness pop = do 
         modM ec (+V.length pop)
         withGen $ \g -> (V.mapM (candidate g) pop) 
