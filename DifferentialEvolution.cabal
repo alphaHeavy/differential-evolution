@@ -36,7 +36,7 @@ Library
                        , deepseq >= 1.1 && < 2
                        , primitive >= 0.3.1 && < 4
                        , mtl > 2 && <= 3
-                       , fclabels >= 0.11 && < 0.12
+                       , fclabels >= 1.0.4 && < 2
                        , vector >= 0.7 && < 0.8
                        , parallel >= 3.1 && < 4
     Exposed-modules:   Numeric.Optimization.Algorithms.DifferentialEvolution
