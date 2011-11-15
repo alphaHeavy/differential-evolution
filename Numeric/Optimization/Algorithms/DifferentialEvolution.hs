@@ -28,20 +28,27 @@ import qualified Data.Vector.Unboxed as VUB
 import qualified Data.Vector.Unboxed.Mutable as MUB
 
 import Control.Applicative
+import Control.Arrow ((&&&),first,second)
+import Control.Monad
+import Control.Monad.Primitive
+import Control.Monad.Reader
+import Control.Monad.ST
+import Control.Monad.State hiding (get,gets,modify)
+import Control.Monad.Writer
 import Data.Function
 import Data.Label as L
+import Data.Maybe
 import Data.Monoid
 import Data.Ord
-import Control.Monad
-import Control.Monad.ST
-import Control.Arrow ((&&&))
-import Control.Monad.Reader
-import Control.Monad.Writer
-import Control.Monad.State hiding (get,gets,modify)
-import qualified Control.Monad.State as ST (get,modify)
-import Control.Monad.Primitive
-import System.Random.MWC
 import Data.Word
+import System.Random.MWC
+import qualified Control.Monad.State as ST (get,modify)
+import qualified Data.HashMap.Strict as HM
+
+import RouletteWheel
+import Distance
+
+import qualified Debug.Trace as DBG
 
 -- Essential Types
 
@@ -58,7 +65,7 @@ type Budget = Int
 -- * Optimizer State
 
 data DEParams = DEParams {_ec  :: Int
-                          ,_pop :: V.Vector (Double,Vector)}
+                         ,_pop :: V.Vector (Double,Vector)}
 
 $(mkLabels [''DEParams])
 
@@ -88,15 +95,11 @@ type DeMonad m gen w  = ReaderT gen (WriterT w m)
 runDE :: (PrimMonad m) => DeMonad m (Generator m) w a -> (Generator m) -> m (a,w)
 runDE m g = runWriterT (runReaderT m g)
 
-
-
-
 type Generator m = Gen (PrimState m)
 
 selectRandom :: (PrimMonad m) => Gen (PrimState m) -> Int -> V.Vector a -> m [a]
 selectRandom !gen !n vec = do
-    --let idx = replicate n 0
-    idx <- replicateM n (randomIndex (V.length vec) gen)
+    idx <- randomIndexes (V.length vec) n gen
     return $ map (V.unsafeIndex vec) idx
 
 {-#INLINE randomIndex#-}
@@ -104,6 +107,31 @@ randomIndex !ub gen = uni >>= return . floor . (fromIntegral ub*)
  where 
   uni = do x <- (uniform gen)
            return (x::Float)  
+
+{-#INLINE randomIndexes#-}
+randomIndexes :: (PrimMonad m) => Int -> Int -> Generator m -> m [Int]
+randomIndexes !ub n gen = sel n []
+ where 
+    sel 0 ss = return ss
+    sel n ss = do
+      x <- randomIndex ub gen
+      if x `elem` ss 
+          then (sel n ss)
+          else sel (n-1) (x:ss)
+
+randomP
+  :: (PrimMonad m, Functor m, Eq a) =>
+     Wheel a -> Int -> Generator m -> m [a]
+
+randomP probs n gen = sel n []
+ where 
+    sel 0 ss = return ss
+    sel n ss = do
+      x <- rouletteSelection probs gen
+      if x `elem` ss  
+          then (sel n ss)
+          else sel (n-1) (x:ss)
+    
 
 expVariate !lambda gen = do
     u :: Float <- uniform gen
@@ -117,44 +145,64 @@ a <-> b = VUB.zipWith (-) a b
 
 (*|)  :: Double -> Vector -> Vector
 a *|  b = VUB.map (a*) b
+
+(|**)  :: Vector -> Double -> Vector
+a |**  b = VUB.map (**b) a
 -- -- --
 
 
 -- |Different strategies for optimization
 data Strategy  = Rand1Bin {cr ::{-# UNPACK #-} !Float, f ::{-# UNPACK #-} !Double}
+               | Prox1Bin {cr ::{-# UNPACK #-} !Float, f ::{-# UNPACK #-} !Double}
                | Rand2Bin {cr ::{-# UNPACK #-} !Float, f ::{-# UNPACK #-} !Double}
                | Rand1Exp {cr ::{-# UNPACK #-} !Float, f ::{-# UNPACK #-} !Double} 
                | Rand2Exp {cr ::{-# UNPACK #-} !Float, f ::{-# UNPACK #-} !Double} 
                deriving (Show)
 
-type DEStrategy m w = Generator m -> Int -> Vector -> V.Vector (Double, Vector) 
-                        -> DeMonad m (Generator m) w Vector
+type DEStrategy m w = Vector -> Generator m -> DeMonad m (Generator m) w Vector
 
 -- |Convert a Showable strategy into executable one
-strategy :: (PrimMonad m, Monoid w) => Strategy -> DEStrategy m w
-strategy (Rand1Bin{..}) = strat' f cr rand1 binCrossover
-strategy (Rand2Bin{..}) = strat' f cr rand2 binCrossover
-strategy (Rand1Exp{..}) = strat' f cr rand1 expCrossover
-strategy (Rand2Exp{..}) = strat' f cr rand2 expCrossover 
+strategy :: (PrimMonad m, Monoid w) => Int -> V.Vector (Double,Vector) -> Strategy -> DEStrategy m w
+strategy l pop (Rand1Bin{..}) = strat' l pop (rand1 f) (binCrossover cr)
+strategy l pop (Rand2Bin{..}) = strat' l pop (rand2 f) (binCrossover cr)
+strategy l pop (Rand1Exp{..}) = strat' l pop (rand1 f) (expCrossover cr)
+strategy l pop (Rand2Exp{..}) = strat' l pop (rand2 f) (expCrossover cr)
+
+strategy l pop (Prox1Bin{..}) = \parent gen -> (lift . lift) $ do
+                        c <- rand2 f pop gen
+                        expCrossover cr l parent c gen
+    where
+    norm a b = VUB.sum . VUB.map sqrt $ (a<->b) |** 2
+    getWheel pt ps = let dists = V.map (norm pt &&& id) ps
+                         s = V.sum . V.map fst $ dists  
+                         probs = V.map (\(d,x) -> (1-d/s,x)) dists 
+                     in wheel . V.toList $ probs
+    
+
 {-# INLINE strategy #-}
 
-strat' f cr m co =  \gen l parent pop -> (lift . lift) (m gen f pop >>= \x -> co l cr parent x gen)
+strat' l pop m co =  \parent gen -> (lift . lift) (m pop gen >>= \x -> co l parent x gen)
 
+rand1Weighted :: (PrimMonad m, Functor m) => Wheel Vector -> Generator m -> Double -> m Vector
 
-rand1 :: (PrimMonad m) => Generator m -> Double -> V.Vector (Double,Vector) -> m Vector
-rand1 gen f pop = do
+rand1Weighted weights gen f = do
+            [x1,x2,x3] <- randomP weights 3 gen -- $ V.toList $ V.map snd pop
+            return $ x1 <+> (f *| (x2 <-> x3))
+
+rand1 :: PrimMonad m => Double -> V.Vector (Double, Vector) -> Generator m -> m Vector
+rand1 f pop gen = do
             [x1,x2,x3] <- selectRandom gen 3 $ V.map snd pop
             return $ x1 <+> (f *| (x2 <-> x3))
 
-rand2 :: (PrimMonad m) => Generator m -> Double -> V.Vector (a, Vector) -> m Vector
-rand2 gen f pop = do
+rand2 :: PrimMonad m => Double -> V.Vector (Double, Vector) -> Generator m -> m Vector
+rand2 f pop gen = do
             [x1,x2,x3,x4,x5] <- selectRandom gen 5 $ V.map snd pop
             return $ x1 <+> (f *| (x2 <-> x3)) <+> (f *| (x4 <-> x5))
 
 expCrossover
   :: (PrimMonad m, VUB.Unbox t) =>
-     Int -> Float -> VUB.Vector t -> VUB.Vector t -> Generator m -> m (VUB.Vector t) 
-expCrossover l cr a b gen = do
+      Float ->Int -> VUB.Vector t -> VUB.Vector t -> Generator m -> m (VUB.Vector t) 
+expCrossover cr l a b gen = do
         n' :: Int <- expVariate cr gen
         index <- randomIndex l gen
         let n = min n' (l-1)
@@ -176,9 +224,9 @@ moduloReplacement1 start length dim a b
 
 binCrossover
   :: (PrimMonad m, VUB.Unbox t) =>
-     Int -> Float -> VUB.Vector t -> VUB.Vector t -> Gen (PrimState m) -> m (VUB.Vector t)
+     Float -> Int -> VUB.Vector t -> VUB.Vector t -> Gen (PrimState m) -> m (VUB.Vector t)
 
-binCrossover l cr a b gen = do
+binCrossover cr l a b gen = do
         randoms :: VUB.Vector Float <- VUB.replicateM l (uniform gen)
         index   :: Int <- randomIndex l gen
         return $ VUB.map (\(x,e1,e2,i) -> if x<cr || i == index then e2 else e1) 
@@ -202,8 +250,8 @@ data DEArgs w = DEArgs {
                       --  to replicate results without storing)
                      ,seed        :: Seed
                       -- |Tracing function. You can use this to track parameters of the evolution.
-                      --  (Ie. This is how you access the final fitness, result vector and fitness 
-                      --  trace)
+                      --  (This is how you access the final fitness, result vector and fitness 
+                      --  trace).
                      ,trace       :: (Monoid w) => DEParams -> w
                      }
 
@@ -236,29 +284,30 @@ de' DEArgs{..} = do
     where
      (lb,ub) = (fst bounds, snd bounds)
      scale x = VUB.zipWith3 (\l u x -> l+x*(u-l)) lb ub x
-     strat = strategy destrategy
      work gen state = do 
                lift . tell $ trace state
                if get ec state > budget 
                 then return () 
-                else deStep strat bounds fitness gen state >>= work gen
+                else deStep destrategy bounds fitness gen state >>= work gen
 
 -- | Single iteration of Differential Evolution. Could be an useful building block
 --   for other algorithms as well.
 deStep :: (Functor m, Monoid w, PrimMonad m) =>
-          DEStrategy m w -> Bounds -> Fitness 
+          Strategy -> Bounds -> Fitness 
           -> Generator m
           -> DEParams 
           -> DeMonad m (Generator m) w DEParams 
-deStep strat bounds fitness gen params = do 
+deStep strate bounds fitness gen params = do 
     newPop <- V.mapM (update gen) . get pop $ params
     return $ modify ec (+ sPop params) . set pop newPop $ params 
    where 
     l = dimension params
+    strat = strategy l (get pop params) strate
     update gen orig@(ft,a) = minBy fst orig 
                              . (fitness &&& id)
                              . saturateVector bounds 
-                             <$> strat gen l a (get pop params)
+                             <$> strat a gen 
+
 
 minBy :: Ord x => (a -> x) -> a -> a -> a
 minBy f a b | f a <= f b  = a 

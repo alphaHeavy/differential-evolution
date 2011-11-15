@@ -1,4 +1,4 @@
-{-#LANGUAGE TemplateHaskell, ScopedTypeVariables, BangPatterns#-}
+{-#LANGUAGE TemplateHaskell, ScopedTypeVariables, BangPatterns, TupleSections#-}
 {-#OPTIONS -fllvm -optlo-mem2reg -optlc-O3 -fexcess-precision -msse2 -funbox-strict-fields#-}
 module Main where
 import Numeric.Optimization.Algorithms.DifferentialEvolution 
@@ -28,9 +28,12 @@ createSeed fls = initialize (VUB.fromList fls) >>= save
 
 main = do
     seed <- createSeed [11..256]
-    w <- de (defaultParams (f4 10) (f4b 10) 
-              (DL.singleton . currentBest)) seed
-    plotList [Custom "logscale" ["y"]] $ map fst . DL.toList $  w
+    let params0 = (defaultParams (f4 10) (f4b 10) (DL.singleton . currentBest))
+    let params1 = (defaultParams (f4 10) (f4b 10) (DL.singleton . currentBest))
+                 {destrategy = Prox1Bin 0.3 0.7}
+    w  <- de params0 seed
+    w2 <- de params1 seed
+    plotLists [Custom "logscale" ["y"]] $ [map fst . DL.toList $ w, map fst . DL.toList $ w2]
     let ds = transpose . map VUB.toList . map snd $ DL.toList w
-    plotLists [Custom "logscale" ["y"]] ds --[map abs . decreasing . DL.toList $ f, DL.toList s]
+    plotListsStyle [Custom "logscale" ["y"]] (map (defaultStyle{plotType = Points},) ds) --[map abs . decreasing . DL.toList $ f, DL.toList s]
     

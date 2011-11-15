@@ -40,5 +40,6 @@ Library
                        , vector >= 0.7 && < 0.8
                        , parallel >= 3.1 && < 4
     Exposed-modules:   Numeric.Optimization.Algorithms.DifferentialEvolution
+    Other-modules:     RouletteWheel,Distance
     ghc-options:       -Odph -fllvm -fexcess-precision -funbox-strict-fields 
 
