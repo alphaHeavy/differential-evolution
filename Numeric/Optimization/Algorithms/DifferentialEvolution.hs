@@ -1,5 +1,4 @@
 {-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -289,14 +288,14 @@ data DEArgs m w = DEArgs {
   -- |Tracing function. You can use this to track parameters of the evolution.
   --  (This is how you access the final fitness, result vector and fitness
   --  trace).
-  , trace       :: (Monoid w) => DEParams -> w
+  , trace       :: DEParams -> w
   }
 
 -- |Generate a parameter setting for DE.
 defaultParams
   :: Fitness m
   -> (VUB.Vector Double, VUB.Vector Double)
-  -> (Monoid w => DEParams -> w)
+  -> (DEParams -> w)
   -> DEArgs m w
 defaultParams fitness bounds trace =
   let dimension = VUB.length . fst $ bounds
