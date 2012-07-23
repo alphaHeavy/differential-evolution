@@ -32,13 +32,15 @@ Cabal-Version:       >=1.8
 
 Library
     Build-Depends:     base >= 4 && < 5
-                       , mwc-random >= 0.8 && <0.9
+                       , mwc-random >= 0.8 && <0.13
                        , deepseq >= 1.1 && < 2
                        , primitive >= 0.3.1 && < 4
                        , mtl > 2 && <= 3
                        , fclabels >= 1.0.4 && < 2
-                       , vector >= 0.7 && < 0.8
+                       , vector >= 0.7 && < 0.10
                        , parallel >= 3.1 && < 4
+                       , unordered-containers >= 0.1 && < 0.3
+                       , QuickCheck >= 2.0 && < 3.0
     Exposed-modules:   Numeric.Optimization.Algorithms.DifferentialEvolution
     Other-modules:     RouletteWheel,Distance
     ghc-options:       -Odph -fllvm -fexcess-precision -funbox-strict-fields 
