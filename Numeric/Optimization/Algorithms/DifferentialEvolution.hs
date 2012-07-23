@@ -1,4 +1,5 @@
 {-# LANGUAGE ScopedTypeVariables, ViewPatterns, BangPatterns, DeriveDataTypeable, RecordWildCards, GeneralizedNewtypeDeriving, MultiParamTypeClasses, RankNTypes, ImpredicativeTypes, TypeFamilies, UndecidableInstances, TemplateHaskell,TypeOperators, FlexibleContexts #-}
+{-# LANGUAGE TupleSections #-}
 -- |Module    : Numeric.Optimization.Algorithms.DifferentialEvolution
 -- Copyright   : (c) 2011 Ville Tirronen
 -- License     : MIT
@@ -58,7 +59,7 @@ type Vector  = VUB.Vector Double
 --   more efficient than array of structures)
 type Bounds  = (VUB.Vector Double, VUB.Vector Double)
 -- |Fitness function type
-type Fitness = Vector -> Double
+type Fitness m = Vector -> m Double
 -- |Termination condition type. (Currently just a hard limit on evaluation count)
 type Budget = Int
 
@@ -186,7 +187,7 @@ strat' l pop m co =  \parent gen -> (lift . lift) (m pop gen >>= \x -> co l pare
 rand1Weighted :: (PrimMonad m, Functor m) => Wheel Vector -> Generator m -> Double -> m Vector
 
 rand1Weighted weights gen f = do
-            [x1,x2,x3] <- randomP weights 3 gen -- $ V.toList $ V.map snd pop
+            [x1,x2,x3] <- randomP weights 3 gen -- V.toList $ V.map snd pop
             return $ x1 <+> (f *| (x2 <-> x3))
 
 rand1 :: PrimMonad m => Double -> V.Vector (Double, Vector) -> Generator m -> m Vector
@@ -233,29 +234,34 @@ binCrossover cr l a b gen = do
                $ VUB.zip4 randoms a b (VUB.enumFromN 0 l)
 
 -- |Parameters for algorithm execution
-data DEArgs w = DEArgs {
-                      -- |Mutation strategy
-                      destrategy :: Strategy
-                      -- |N-dimensional function to be minimized
-                     ,fitness     :: Fitness
-                      -- |N-orthope describing the domain of the fitness function
-                     ,bounds      :: Bounds
-                      -- |N, this should work well with dimension from 2-100
-                     ,dim         :: Int
-                      -- |Number of indeviduals to use in optimization (60 is good)
-                     ,spop        :: Int
-                      -- |Number of fitness function evaluations until termination
-                     ,budget      :: Budget
-                      -- |Seed value for random number generation. (You often wish 
-                      --  to replicate results without storing)
-                     ,seed        :: Seed
-                      -- |Tracing function. You can use this to track parameters of the evolution.
-                      --  (This is how you access the final fitness, result vector and fitness 
-                      --  trace).
-                     ,trace       :: (Monoid w) => DEParams -> w
-                     }
+data DEArgs m w = DEArgs {
+  -- |Mutation strategy
+   destrategy :: Strategy
+  -- |N-dimensional function to be minimized
+  ,fitness     :: Fitness m
+  -- |N-orthope describing the domain of the fitness function
+  ,bounds      :: Bounds
+  -- |N, this should work well with dimension from 2-100
+  ,dim         :: Int
+  -- |Number of individuals to use in optimization (60 is good)
+  ,spop        :: Int
+  -- |Number of fitness function evaluations until termination
+  ,budget      :: Budget
+  -- |Seed value for random number generation. (You often wish 
+  --  to replicate results without storing)
+  ,seed        :: Seed
+  -- |Tracing function. You can use this to track parameters of the evolution.
+  --  (This is how you access the final fitness, result vector and fitness 
+  --  trace).
+  ,trace       :: (Monoid w) => DEParams -> w
+  }
 
 -- |Generate a parameter setting for DE. 
+defaultParams
+  :: Fitness m
+  -> (VUB.Vector Double, VUB.Vector Double)
+  -> (Monoid w => DEParams -> w)
+  -> DEArgs m w
 defaultParams fitness bounds = DEArgs (Rand1Exp 0.9 0.70) 
                                          fitness bounds dimension 
                                          60 (5000*dimension) seed
@@ -270,17 +276,16 @@ saturateVector (mn,mx) x = VUB.generate d (\i -> min (mx!i) (max (mn!i) (x!i)))
 
 -- | Run DE algorithm over a 'PrimMonad' such as 'IO' or 'ST'. Returns the fitness trace 
 --   specified by 'DEArgs.trace'
-de :: (Functor m, Monoid w, PrimMonad m) => DEArgs w -> Seed -> m w 
+de :: (Functor m, Monoid w, PrimMonad m) => DEArgs m w -> Seed -> m w 
 de args seed = restore seed >>= runDE (de' args) >>= return . snd
 
 -- | Create a Differential Evolution process inside DeMonad
-de' :: (Functor m, Monoid w, PrimMonad m) => DEArgs w -> DeMonad m (Generator m) w ()
+de' :: (Functor m, Monoid w, PrimMonad m) => DEArgs m w -> DeMonad m (Generator m) w ()
 de' DEArgs{..} = do
     gen  <- lift . lift $ restore seed
-    init <- lift . lift $ V.replicateM spop (uniformVector gen dim >>= return.scale) 
-    let population =  V.map (fitness &&& id) init
-        state      = DEParams (V.length population) population
-    work gen state
+    init <- lift . lift $ V.replicateM spop (scale <$> uniformVector gen dim)
+    population <- V.forM init $ \ x -> (,x) <$> (lift . lift $ fitness x)
+    work gen $ DEParams (V.length population) population
     where
      (lb,ub) = (fst bounds, snd bounds)
      scale x = VUB.zipWith3 (\l u x -> l+x*(u-l)) lb ub x
@@ -293,23 +298,21 @@ de' DEArgs{..} = do
 -- | Single iteration of Differential Evolution. Could be an useful building block
 --   for other algorithms as well.
 deStep :: (Functor m, Monoid w, PrimMonad m) =>
-          Strategy -> Bounds -> Fitness 
+          Strategy -> Bounds -> Fitness m
           -> Generator m
           -> DEParams 
           -> DeMonad m (Generator m) w DEParams 
 deStep strate bounds fitness gen params = do 
     newPop <- V.mapM (update gen) . get pop $ params
-    return $ modify ec (+ sPop params) . set pop newPop $ params 
+    return . modify ec (+ sPop params) . set pop newPop $ params 
    where 
     l = dimension params
     strat = strategy l (get pop params) strate
-    update gen orig@(ft,a) = minBy fst orig 
-                             . (fitness &&& id)
-                             . saturateVector bounds 
-                             <$> strat a gen 
-
+    update gen orig@(ft,a) = do
+      val <- saturateVector bounds <$> strat a gen
+      fitnessVal <- lift . lift $ fitness val
+      return $! minBy fst orig (fitnessVal, val)
 
 minBy :: Ord x => (a -> x) -> a -> a -> a
 minBy f a b | f a <= f b  = a 
             | otherwise  = b
-
