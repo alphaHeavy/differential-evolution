@@ -69,7 +69,7 @@ type Budget = Int
 
 data DEParams = DEParams
   { _ec  :: {-# UNPACK #-} !Int
-  , _pop :: V.Vector (Double,Vector)
+  , _pop :: V.Vector (Double, Vector)
   }
 
 $(mkLabels [''DEParams])
@@ -84,7 +84,7 @@ population
   :: DEParams :-> V.Vector (Double,Vector)
 population = pop
 
--- | Get the current best indevidual and Fitness
+-- | Get the current best individual and Fitness
 currentBest
   :: DEParams
   -> (Double, Vector)
@@ -129,15 +129,14 @@ selectRandom !gen !n vec = do
 
 {-# INLINE randomIndex #-}
 randomIndex
-  :: (Integral a, Integral b, PrimMonad m)
+  :: forall a b m . (Integral a, Integral b, PrimMonad m)
   => a
   -> Gen (PrimState m)
   -> m b
-randomIndex !ub gen = uni >>= return . floor . (fromIntegral ub*)
- where
-  uni = do
-    x <- (uniform gen)
-    return (x::Float)
+randomIndex !ub gen =
+ let uni :: m Float
+     uni = uniform gen
+ in uni >>= return . floor . (fromIntegral ub*)
 
 {-# INLINE randomIndexes #-}
 randomIndexes
@@ -170,8 +169,8 @@ expVariate !lambda gen = do
 a <+> b = VUB.zipWith (+) a b
 a <-> b = VUB.zipWith (-) a b
 
-(*|)  :: Double -> Vector -> Vector
-a *|  b = VUB.map (a*) b
+(*|) :: Double -> Vector -> Vector
+a *| b = VUB.map (a*) b
 
 -- |Different strategies for optimization
 data Strategy
@@ -314,7 +313,7 @@ saturateVector :: Bounds -> VUB.Vector Double -> VUB.Vector Double
 saturateVector (mn,mx) x =
   let (!) = (VUB.!)
       d = VUB.length x
-  in VUB.generate d (\i -> min (mx!i) (max (mn!i) (x!i)))
+  in VUB.generate d $ \ i -> min (mx!i) (max (mn!i) (x!i))
 
 -- | Run DE algorithm over a 'PrimMonad' such as 'IO' or 'ST'. Returns the fitness trace
 --   specified by 'DEArgs.trace'
