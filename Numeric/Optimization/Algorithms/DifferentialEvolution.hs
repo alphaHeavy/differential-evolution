@@ -322,7 +322,7 @@ defaultParams fitness bounds =
        , dim        = dimension
        , spop       = 60
        , budget     = 5000 * dimension
-       , seed       = runST (create >>=save)
+       , seed       = runST (create >>= save)
        }
 
 saturateVector :: Bounds -> VUB.Vector Double -> VUB.Vector Double
