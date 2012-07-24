@@ -43,5 +43,5 @@ Library
                        , QuickCheck >= 2.0 && < 3.0
     Exposed-modules:   Numeric.Optimization.Algorithms.DifferentialEvolution
     Other-modules:     RouletteWheel,Distance
-    ghc-options:       -Odph -fllvm -fexcess-precision -funbox-strict-fields 
+    ghc-options:       -fexcess-precision -funbox-strict-fields 
 
