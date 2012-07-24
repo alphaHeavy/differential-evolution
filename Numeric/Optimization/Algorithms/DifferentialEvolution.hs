@@ -65,7 +65,7 @@ type Bounds  = (VUB.Vector Double, VUB.Vector Double)
 
 -- |
 -- Fitness function type
-type Fitness i m o = Vector -> m o
+type Fitness i m o = V.Vector Vector -> m (V.Vector (o, Vector))
 
 -- |
 -- Termination condition type. (Currently just a hard limit on evaluation count)
@@ -325,7 +325,10 @@ defaultParams fitness bounds =
        , seed       = runST (create >>= save)
        }
 
-saturateVector :: Bounds -> VUB.Vector Double -> VUB.Vector Double
+saturateVector
+  :: Bounds
+  -> VUB.Vector Double
+  -> VUB.Vector Double
 saturateVector (mn,mx) x =
   let (!) = (VUB.!)
       d = VUB.length x
@@ -360,8 +363,10 @@ de' DEArgs{..} = do
         | otherwise = deStep destrategy bounds fitness gen state >>= work gen
 
   gen  <- lift $ restore seed
-  init <- lift $ V.replicateM spop (scale <$> uniformVector gen dim)
-  population <- V.forM init $ \ x -> (,x) <$> (lift $ fitness x)
+  population <- lift $ do
+    init <- V.replicateM spop (scale <$> uniformVector gen dim)
+    fitness init
+
   work gen $ DEParams (V.length population) population
 
 -- |
@@ -378,12 +383,12 @@ deStep
 deStep strate bounds fitness gen params = do
   let l = dimension params
       strat = strategy l (get pop params) strate
-      update gen orig@(_ft,a) = lift $ do
-        val <- saturateVector bounds <$> strat a gen
+      update gen orig = lift $ do
+        val <- V.forM orig $ \ (_, a) -> saturateVector bounds <$> strat a gen
         fitnessVal <- fitness val
-        return $! minBy fst orig (fitnessVal, val)
+        return $! V.zipWith (minBy fst) orig fitnessVal
 
-  newPop <- V.mapM (update gen) . get pop $ params
+  newPop <- update gen . get pop $ params
   return $! modify ec (+ sPop params) . set pop newPop $ params
 
 minBy
