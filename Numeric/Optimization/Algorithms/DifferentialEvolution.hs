@@ -21,21 +21,14 @@ module Numeric.Optimization.Algorithms.DifferentialEvolution
   , Bounds
   , Fitness
   , Budget
-  , DeMonad
   , DEParams(..)
   , -- * Control Parameters
     DEArgs(..)
   , Strategy(..)
   , strategy
   , defaultParams
-  , -- * Accessing internal state of the algorithm
-    evaluationCount
-  , population
-  , currentBest
   , -- * Executing the algorithm
-    runDE
-  , de
-  , de'
+    de
   , deStep
   ) where
 
@@ -51,6 +44,7 @@ import Control.Monad.Reader
 import Control.Monad.ST
 import Data.Label as L
 import Data.Ord
+import Data.Tuple (swap)
 import System.Random.MWC
 
 -- Essential Types
@@ -62,7 +56,7 @@ type Vector  = VUB.Vector Double
 -- |
 -- Type for storing function domain orthope. (Structure of arrays seems
 -- more efficient than array of structures)
-type Bounds  = (VUB.Vector Double, VUB.Vector Double)
+type Bounds  = (Vector, Vector)
 
 -- |
 -- Fitness function type
@@ -82,26 +76,6 @@ data DEParams o = DEParams
 $(mkLabels [''DEParams])
 
 -- |
--- The current number of fitness evaluations
-evaluationCount
-  :: DEParams o :-> Int
-evaluationCount = ec
-
--- |
--- The current set of active trial points
-population
-  :: DEParams o :-> V.Vector (o, Vector)
-population = pop
-
--- |
--- Get the current best individual and Fitness
-currentBest
-  :: Ord o
-  => DEParams o
-  -> (o, Vector)
-currentBest = V.minimumBy (comparing fst) . get pop
-
--- |
 -- Population Size
 sPop
   :: DEParams o
@@ -117,22 +91,11 @@ dimension = VUB.length . snd . V.head . get pop
 
 -- * Context monad
 
--- |
--- Monad for storing optimization trace and random number generator
-type DeMonad gen m  = ReaderT gen m
-
-runDE
-  :: (MonadBase b m, PrimMonad b)
-  => DeMonad (Generator b) m a
-  -> Generator b
-  -> m a
-runDE m g = runReaderT m g
-
-type Generator m = Gen (PrimState m)
+type Generator b = Gen (PrimState b)
 
 selectRandom
   :: (MonadBase b m, PrimMonad b)
-  => Gen (PrimState b)
+  => Generator b
   -> Int
   -> V.Vector a
   -> m [a]
@@ -141,9 +104,9 @@ selectRandom gen n vec = do
   return $! map (V.unsafeIndex vec) idx
 
 randomIndex
-  :: forall a b r m . (Integral a, Integral r, MonadBase b m, PrimMonad b)
+  :: (Integral a, Integral r, MonadBase b m, PrimMonad b)
   => a
-  -> Gen (PrimState b)
+  -> Generator b
   -> m r
 {-# INLINE randomIndex #-}
 randomIndex ub gen = do
@@ -169,7 +132,7 @@ randomIndexes ub n gen =
 expVariate
   :: (Integral r, MonadBase b m, PrimMonad b)
   => Float
-  -> Gen (PrimState b)
+  -> Generator b
   -> m r
 expVariate lambda gen = do
   uni <- liftBase $ uniform gen
@@ -177,7 +140,7 @@ expVariate lambda gen = do
 
 -- --
 -- These should also have their own Vector - module
-(<+>),(<->) :: Vector -> Vector -> Vector
+(<+>), (<->) :: Vector -> Vector -> Vector
 a <+> b = VUB.zipWith (+) a b
 a <-> b = VUB.zipWith (-) a b
 
@@ -201,28 +164,30 @@ strategy
   => Int
   -> V.Vector (o, Vector)
   -> Strategy
-  -> VUB.Vector Double
+  -> Vector
   -> Generator b
-  -> m (VUB.Vector Double)
+  -> m Vector
 {-# INLINE strategy #-}
 strategy l pop Rand1Bin{..} = strat' l pop (rand1 f) (binCrossover cr)
 strategy l pop Rand2Bin{..} = strat' l pop (rand2 f) (binCrossover cr)
 strategy l pop Rand1Exp{..} = strat' l pop (rand1 f) (expCrossover cr)
 strategy l pop Rand2Exp{..} = strat' l pop (rand2 f) (expCrossover cr)
-strategy l pop Prox1Bin{..} = \parent gen -> do
+strategy l pop Prox1Bin{..} = \ parent gen -> do
   c <- rand2 f pop gen
   expCrossover cr l parent c gen
 
 strat'
   :: MonadBase b m
-  => Int 
+  => Int
   -> V.Vector (o, Vector)
   -> (V.Vector (o, Vector) -> Generator b -> m Vector)
   -> (Int -> Vector -> Vector -> Generator b -> m Vector)
   -> Vector
   -> Generator b
   -> m Vector
-strat' l pop m co parent gen = m pop gen >>= \x -> co l parent x gen
+strat' l pop m co parent gen = do
+  x <- m pop gen
+  co l parent x gen
 
 rand1
   :: (MonadBase b m, PrimMonad b)
@@ -231,7 +196,7 @@ rand1
   -> Generator b
   -> m Vector
 rand1 f pop gen = do
-  [x1,x2,x3] <- selectRandom gen 3 $ V.map snd pop
+  [x1, x2, x3] <- selectRandom gen 3 $ V.map snd pop
   return $! x1 <+> (f *| (x2 <-> x3))
 
 rand2
@@ -241,7 +206,7 @@ rand2
   -> Generator b
   -> m Vector
 rand2 f pop gen = do
-  [x1,x2,x3,x4,x5] <- selectRandom gen 5 $ V.map snd pop
+  [x1, x2, x3, x4, x5] <- selectRandom gen 5 $ V.map snd pop
   return $! x1 <+> (f *| (x2 <-> x3)) <+> (f *| (x4 <-> x5))
 
 expCrossover
@@ -272,7 +237,7 @@ moduloReplacement1 start length dim a b = VUB.modify step a where
   step :: MUB.MVector s a -> ST s ()
   step v = do
     MUB.write v start (b VUB.! start)
-    forM_ ([0..overflow-1]++[start..end-1]) $ \i -> MUB.write v i (b VUB.! i)
+    forM_ ([0..overflow-1] ++ [start..end-1]) $ \ i -> MUB.write v i (b VUB.! i)
 
 binCrossover
   :: (MonadBase b m, PrimMonad b, VUB.Unbox a)
@@ -280,12 +245,12 @@ binCrossover
   -> Int
   -> VUB.Vector a
   -> VUB.Vector a
-  -> Gen (PrimState b)
+  -> Generator b
   -> m (VUB.Vector a)
 binCrossover cr l a b gen = do
   randoms <- liftBase $ VUB.replicateM l (uniform gen)
   index :: Int <- randomIndex l gen
-  return $! VUB.map (\(x,e1,e2,i) -> if x<cr || i == index then e2 else e1)
+  return $! VUB.map (\ (x, e1, e2, i) -> if x < cr || i == index then e2 else e1)
           $ VUB.zip4 randoms a b (VUB.enumFromN 0 l)
 
 -- |
@@ -312,7 +277,7 @@ data DEArgs i m o = DEArgs {
 -- Generate a parameter setting for DE.
 defaultParams
   :: Fitness i m o
-  -> (VUB.Vector Double, VUB.Vector Double)
+  -> Bounds
   -> DEArgs i m o
 defaultParams fitness bounds =
   let dimension = VUB.length . fst $ bounds
@@ -328,9 +293,9 @@ defaultParams fitness bounds =
 
 saturateVector
   :: Bounds
-  -> VUB.Vector Double
-  -> VUB.Vector Double
-saturateVector (mn,mx) x =
+  -> Vector
+  -> Vector
+saturateVector (mn, mx) x =
   let (!) = (VUB.!)
       d = VUB.length x
   in VUB.generate d $ \ i -> min (mx!i) (max (mn!i) (x!i))
@@ -340,32 +305,17 @@ saturateVector (mn,mx) x =
 de
   :: (Functor m, MonadBase b m, Ord o, PrimMonad b)
   => DEArgs i m o
-  -> Seed
   -> m [(Vector, o)]
-de args seed = liftBase (restore seed) >>= runDE (de' args)
-
-swap
-  :: (a, b)
-  -> (b, a)
-swap (a, b) = (b, a)
-
--- |
--- Create a Differential Evolution process inside DeMonad
-de'
-  :: forall b i m o . (Functor m, MonadBase b m, Ord o, PrimMonad b)
-  => DEArgs i m o
-  -> DeMonad (Generator b) m [(Vector, o)]
-de' DEArgs{..} = do
+de DEArgs{..} = do
   let (lb, ub) = bounds
-      scale x  = VUB.zipWith3 (\l u x -> l+x*(u-l)) lb ub x
-      work :: Generator b -> DEParams o -> DeMonad (Generator b) m [(Vector, o)]
+      scale x  = VUB.zipWith3 (\ l u x -> l+x*(u-l)) lb ub x
       work gen state
         | get ec state > budget = return $! fmap swap . V.toList $ get pop state
         | otherwise = deStep destrategy bounds fitness gen state >>= work gen
 
   gen  <- liftBase $ restore seed
   init <- liftBase $ V.replicateM spop (scale <$> uniformVector gen dim)
-  population <- lift $ fitness init
+  population <- fitness init
 
   work gen $ DEParams (V.length population) population
 
@@ -379,11 +329,11 @@ deStep
   -> Fitness i m o
   -> Generator b
   -> DEParams o
-  -> DeMonad (Generator b) m (DEParams o)
+  -> m (DEParams o)
 deStep strate bounds fitness gen params = do
   let l = dimension params
       strat = strategy l (get pop params) strate
-      update gen orig = lift $ do
+      update gen orig = do
         val <- V.forM orig $ \ (_, a) -> saturateVector bounds <$> strat a gen
         fitnessVal <- fitness val
         return $! V.zipWith (minBy fst) orig fitnessVal
